@@ -864,6 +864,165 @@ public class XML {
     }
 
     /**
+     * Converts an XML Reader to a JSONObject with only the content at the specified path.
+     *
+     * @param reader The Reader containing XML
+     * @param path The JSONPointer path to extract
+     * @return A JSONObject containing only the content at the specified path
+     * @throws JSONException If there is a syntax error
+     */
+    public static JSONObject toJSONObject(Reader reader, JSONPointer path) throws JSONException {
+        // First, convert the XML to a complete JSONObject
+        JSONObject fullObject = toJSONObject(reader);
+
+        // Use the JSONPointer to extract the object at the specified path
+        Object target = path.queryFrom(fullObject);
+
+        if (target == null) {
+            throw new JSONException("Path not found: " + path);
+        }
+
+        // If it's a JSONObject, return it directly
+        if (target instanceof JSONObject) {
+            return (JSONObject) target;
+        } else if (target instanceof JSONArray) {
+            // If it's a JSONArray, wrap it in a JSONObject
+            JSONObject result = new JSONObject();
+            result.put("array", target);
+            return result;
+        } else {
+            // If it's a primitive value, wrap it in a JSONObject
+            JSONObject result = new JSONObject();
+            result.put("value", target);
+            return result;
+        }
+    }
+
+    /**
+     * Converts an XML Reader to a JSONObject and replaces content at the specified path.
+     *
+     * @param reader The Reader containing XML
+     * @param path The JSONPointer path where content should be replaced
+     * @param replacement The replacement JSONObject
+     * @return A JSONObject with the content at the specified path replaced
+     * @throws JSONException If there is a syntax error
+     */
+    public static JSONObject toJSONObject(Reader reader, JSONPointer path, JSONObject replacement) throws JSONException {
+        // First, convert the XML to a complete JSONObject
+        JSONObject fullObject = toJSONObject(reader);
+
+        // Replace the content at the specified path
+        replaceAtPath(fullObject, path, replacement);
+
+        return fullObject;
+    }
+
+    /**
+     * Helper method to replace content at a specific path in a JSONObject.
+     *
+     * @param root The root JSONObject
+     * @param path The JSONPointer path to the content to replace
+     * @param replacement The replacement JSONObject
+     * @throws JSONException If path cannot be navigated
+     */
+    private static void replaceAtPath(JSONObject root, JSONPointer path, JSONObject replacement) throws JSONException {
+        // Get the path as a string and remove the leading "/"
+        String pathStr = path.toString();
+        if (pathStr.startsWith("/")) {
+            pathStr = pathStr.substring(1);
+        }
+
+        // Split the path into segments
+        String[] segments = pathStr.split("/");
+
+        // Navigate to the parent object of the target
+        JSONObject parent = root;
+        int lastIndex = segments.length - 1;
+
+        for (int i = 0; i < lastIndex; i++) {
+            String segment = segments[i];
+
+            // Check for array indices in the path
+            if (isArrayIndex(segment) && i > 0) {
+                // Get the previous segment to access the array
+                String prevSegment = segments[i - 1];
+
+                // Get the array from the parent
+                JSONArray array = parent.getJSONArray(prevSegment);
+
+                // Get the index
+                int index = Integer.parseInt(segment);
+
+                // If this is the second-to-last segment, we need to replace in the array
+                if (i == lastIndex - 1) {
+                    array.put(index, replacement);
+                    return;
+                }
+
+                // Otherwise, get the object at the index and continue
+                parent = array.getJSONObject(index);
+                // Skip the next iteration since we've already processed this segment
+                i++;
+                continue;
+            }
+
+            // If not an array index, just get the object at the key
+            if (!parent.has(segment)) {
+                throw new JSONException("Path segment not found: " + segment);
+            }
+
+            if (!(parent.get(segment) instanceof JSONObject)) {
+                // If next segment is an array index, check if this is a JSONArray
+                if (i + 1 < segments.length && isArrayIndex(segments[i + 1])) {
+                    if (parent.get(segment) instanceof JSONArray) {
+                        // We'll handle this in the next iteration
+                        continue;
+                    }
+                }
+                throw new JSONException("Path segment is not a JSONObject: " + segment);
+            }
+
+            parent = parent.getJSONObject(segment);
+        }
+
+        // Now parent is the object containing our target, and lastSegment is the key to replace
+        String lastSegment = segments[lastIndex];
+
+        // Check if the last segment is an array index
+        if (isArrayIndex(lastSegment) && lastIndex > 0) {
+            String arraySegment = segments[lastIndex - 1];
+            if (parent.has(arraySegment) && parent.get(arraySegment) instanceof JSONArray) {
+                JSONArray array = parent.getJSONArray(arraySegment);
+                int index = Integer.parseInt(lastSegment);
+                array.put(index, replacement);
+            } else {
+                throw new JSONException("Array not found at path: " + arraySegment);
+            }
+        } else {
+            // Otherwise, just replace the value at the key
+            if (!parent.has(lastSegment)) {
+                throw new JSONException("Final path segment not found: " + lastSegment);
+            }
+            parent.put(lastSegment, replacement);
+        }
+    }
+
+    /**
+     * Helper method to check if a path segment is an array index.
+     *
+     * @param segment The path segment to check
+     * @return true if the segment is a valid array index, false otherwise
+     */
+    private static boolean isArrayIndex(String segment) {
+        try {
+            int index = Integer.parseInt(segment);
+            return index >= 0;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    /**
      * Convert a JSONObject into a well-formed, element-normal XML string.
      *
      * @param object
