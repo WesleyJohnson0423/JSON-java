@@ -17,7 +17,14 @@ import java.math.BigInteger;
 import java.util.*;
 import java.util.Map.Entry;
 import java.util.regex.Pattern;
-
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
+import java.util.Iterator;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.ArrayDeque;
+import java.util.Queue;
+import java.util.NoSuchElementException;
 /**
  * A JSONObject is an unordered collection of name/value pairs. Its external
  * form is a string wrapped in curly braces with colons between the names and
@@ -3029,5 +3036,291 @@ public class JSONObject {
         }
         if (negativeFirstChar) {return "-0";}
         return "0";
+    }
+    // ============ Milestone 4: 流式API ============
+    /**
+     * Internal iterator class for traversing JSON structure in streaming fashion.
+     * This class supports different streaming modes and handles both JSONObject and JSONArray structures.
+     */
+    private static class JSONIterator implements Iterator<JSONNode> {
+        private final Queue<JSONNode> queue;
+        private final StreamType streamType;
+        private final int maxDepth;
+
+        /**
+         * Constructor for basic streaming types.
+         *
+         * @param root The root JSONObject to iterate over
+         * @param basePath The base path for node identification
+         * @param depth The starting depth level
+         * @param streamType The type of streaming behavior
+         */
+        public JSONIterator(JSONObject root, String basePath, int depth, StreamType streamType) {
+            this(root, basePath, depth, streamType, Integer.MAX_VALUE);
+        }
+
+        /**
+         * Constructor with depth limit support.
+         *
+         * @param root The root JSONObject to iterate over
+         * @param basePath The base path for node identification
+         * @param depth The starting depth level
+         * @param streamType The type of streaming behavior
+         * @param maxDepth Maximum depth to traverse
+         */
+        public JSONIterator(JSONObject root, String basePath, int depth, StreamType streamType, int maxDepth) {
+            this.queue = new ArrayDeque<>();
+            this.streamType = streamType;
+            this.maxDepth = maxDepth;
+            populateQueue(root, basePath, depth);
+        }
+
+        /**
+         * Populates the queue with JSONNode objects based on the streaming type.
+         * This method recursively traverses the JSON structure.
+         *
+         * @param obj The current object being processed (JSONObject or JSONArray)
+         * @param currentPath The current path in the JSON structure
+         * @param depth The current depth level
+         */
+        private void populateQueue(Object obj, String currentPath, int depth) {
+            // Check depth limit
+            if (depth > maxDepth) {
+                return;
+            }
+
+            if (obj instanceof JSONObject) {
+                JSONObject jsonObj = (JSONObject) obj;
+
+                // Process each key-value pair in the JSONObject
+                for (String key : jsonObj.keySet()) {
+                    Object value = jsonObj.get(key);
+                    String newPath = buildPath(currentPath, key);
+                    JSONNode node = new JSONNode(newPath, key, value, depth);
+
+                    // Add node to queue if it matches our streaming criteria
+                    if (shouldIncludeNode(node)) {
+                        queue.offer(node);
+                    }
+
+                    // Recursively process nested structures if allowed
+                    if (shouldTraverseDeeper(depth)) {
+                        if (value instanceof JSONObject || value instanceof JSONArray) {
+                            populateQueue(value, newPath, depth + 1);
+                        }
+                    }
+                }
+
+            } else if (obj instanceof JSONArray) {
+                JSONArray jsonArray = (JSONArray) obj;
+
+                // Process each element in the JSONArray
+                for (int i = 0; i < jsonArray.length(); i++) {
+                    Object value = jsonArray.get(i);
+                    String newPath = buildArrayPath(currentPath, i);
+                    JSONNode node = new JSONNode(newPath, String.valueOf(i), value, depth);
+
+                    // Add node to queue if it matches our streaming criteria
+                    if (shouldIncludeNode(node)) {
+                        queue.offer(node);
+                    }
+
+                    // Recursively process nested structures if allowed
+                    if (shouldTraverseDeeper(depth)) {
+                        if (value instanceof JSONObject || value instanceof JSONArray) {
+                            populateQueue(value, newPath, depth + 1);
+                        }
+                    }
+                }
+            }
+        }
+
+        /**
+         * Builds a path string for object properties.
+         *
+         * @param currentPath The current path
+         * @param key The property key to append
+         * @return The new path string
+         */
+        private String buildPath(String currentPath, String key) {
+            if (currentPath == null || currentPath.isEmpty()) {
+                return key;
+            }
+            return currentPath + "." + key;
+        }
+
+        /**
+         * Builds a path string for array elements.
+         *
+         * @param currentPath The current path
+         * @param index The array index to append
+         * @return The new path string
+         */
+        private String buildArrayPath(String currentPath, int index) {
+            if (currentPath == null || currentPath.isEmpty()) {
+                return "[" + index + "]";
+            }
+            return currentPath + "[" + index + "]";
+        }
+
+        /**
+         * Determines whether a node should be included in the stream based on the streaming type.
+         *
+         * @param node The node to evaluate
+         * @return true if the node should be included, false otherwise
+         */
+        private boolean shouldIncludeNode(JSONNode node) {
+            switch (streamType) {
+                case ALL_NODES:
+                    return true;
+
+                case LEAF_NODES_ONLY:
+                    return node.isLeaf();
+
+                case TOP_LEVEL_ONLY:
+                    return node.getDepth() == 0;
+
+                case DEPTH_LIMITED:
+                    return node.getDepth() <= maxDepth;
+
+                case FILTERED:
+                    // For filtered type, we'd need additional criteria
+                    // This could be extended with a Predicate<JSONNode> parameter
+                    return true;
+
+                default:
+                    return true;
+            }
+        }
+
+        /**
+         * Determines whether we should continue traversing deeper into the structure.
+         *
+         * @param currentDepth The current depth level
+         * @return true if we should traverse deeper, false otherwise
+         */
+        private boolean shouldTraverseDeeper(int currentDepth) {
+            switch (streamType) {
+                case TOP_LEVEL_ONLY:
+                    return false;  // Only process top level, no deeper traversal
+
+                case DEPTH_LIMITED:
+                    return currentDepth < maxDepth;  // Respect depth limit
+
+                case ALL_NODES:
+                case LEAF_NODES_ONLY:
+                case FILTERED:
+                default:
+                    return currentDepth < maxDepth;  // Continue until max depth
+            }
+        }
+
+        /**
+         * Checks if there are more elements to iterate over.
+         *
+         * @return true if there are more elements, false otherwise
+         */
+        @Override
+        public boolean hasNext() {
+            return !queue.isEmpty();
+        }
+
+        /**
+         * Returns the next JSONNode in the iteration.
+         *
+         * @return The next JSONNode
+         * @throws NoSuchElementException if there are no more elements
+         */
+        @Override
+        public JSONNode next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException("No more elements in JSON stream");
+            }
+            return queue.poll();
+        }
+
+        /**
+         * Remove operation is not supported for this iterator.
+         *
+         * @throws UnsupportedOperationException always
+         */
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException("Remove operation is not supported by JSONIterator");
+        }
+
+        /**
+         * Returns the current size of the queue (number of remaining elements).
+         * This is useful for debugging and monitoring purposes.
+         *
+         * @return The number of elements remaining in the queue
+         */
+        public int remainingElements() {
+            return queue.size();
+        }
+
+        /**
+         * Returns information about the iterator's configuration.
+         * Useful for debugging and logging.
+         *
+         * @return A string describing the iterator's configuration
+         */
+        @Override
+        public String toString() {
+            return String.format("JSONIterator{streamType=%s, maxDepth=%d, remainingElements=%d}",
+                    streamType, maxDepth, queue.size());
+        }
+    }
+    public Stream<JSONNode> toStream() {
+        return toStream(StreamType.ALL_NODES);
+    }
+
+    public Stream<JSONNode> toStream(StreamType streamType) {
+        return StreamSupport.stream(
+                Spliterators.spliteratorUnknownSize(
+                        new JSONIterator(this, "", 0, streamType),
+                        Spliterator.ORDERED
+                ),
+                false
+        );
+    }
+
+    public Stream<JSONNode> toStream(int maxDepth) {
+        return StreamSupport.stream(
+                Spliterators.spliteratorUnknownSize(
+                        new JSONIterator(this, "", 0, StreamType.DEPTH_LIMITED, maxDepth),
+                        Spliterator.ORDERED
+                ),
+                false
+        );
+    }
+    /**
+     * Returns a stream of all keys in this JSONObject.
+     *
+     * @return A stream of key strings
+     */
+    public Stream<String> keyStream() {
+        return toStream(StreamType.ALL_NODES)
+                .map(JSONNode::getKey)
+                .filter(key -> !key.isEmpty());
+    }
+    /**
+     * Returns a stream of all paths in this JSONObject.
+     *
+     * @return A stream of path strings
+     */
+    public Stream<String> pathStream() {
+        return toStream(StreamType.ALL_NODES)
+                .map(JSONNode::getPath)
+                .filter(path -> !path.isEmpty());
+    }
+    /**
+     * Returns a stream of all leaf node values as strings.
+     *
+     * @return A stream of string values
+     */
+    public Stream<String> valueStream() {
+        return toStream(StreamType.LEAF_NODES_ONLY)
+                .map(node -> node.getValue().toString());
     }
 }
